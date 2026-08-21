@@ -13,6 +13,7 @@ let conversations = {};
 let currentConversationId = null;
 const uiRefs = {};
 let saveTimer = null;
+let sampleSyncSeq = 0;
 
 function esc(text) {
   return String(text ?? "")
@@ -37,9 +38,10 @@ function loadConvos() {
   } catch {
     conversations = {};
   }
-  // 页面刷新后，正在运行的任务已中断，清理残留的运行状态
+  // 兼容旧版本残留的运行标记
   Object.values(conversations).forEach((c) => {
     if (c.running) c.running = null;
+    if (!c.activeTask) c.activeTask = null;
   });
 }
 
@@ -118,11 +120,11 @@ async function api(path, options = {}) {
   return data;
 }
 
-async function streamApi(path, body, onEvent) {
+async function streamApi(path, onEvent, method = "POST", body = null) {
   const resp = await fetch(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    method,
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
   });
   if (!resp.ok) {
     const data = await resp.json().catch(() => ({}));
@@ -168,6 +170,12 @@ function skillCardHtml(skill) {
         `<li><span class="step-no">${esc(s.order)}</span><div><strong>${esc(s.title)}</strong><span class="tag">${esc(s.method)}</span><p>${esc(s.goal)}</p></div></li>`
     )
     .join("");
+  const statusBadge =
+    skill.status === "published"
+      ? '<span class="badge ok">已发布</span>'
+      : '<span class="badge draft">草稿</span>';
+  const publishBtn =
+    skill.status === "published" ? "" : '<button class="btn" data-publish>发布 Skill</button>';
 
   return `
   <div class="skill-card">
@@ -177,6 +185,7 @@ function skillCardHtml(skill) {
         <p>${esc(skill.description)}</p>
       </div>
       <span class="badge">v${esc(skill.version)}</span>
+      ${statusBadge}
     </div>
     <section>
       <h4>使用场景</h4>
@@ -202,6 +211,7 @@ function skillCardHtml(skill) {
       <button class="btn primary" data-execute>使用示例数据执行</button>
       <button class="btn" data-json-toggle>查看完整配置</button>
       <button class="btn" data-export>导出 Markdown</button>
+      ${publishBtn}
     </div>
     <pre class="json hidden" data-json>${esc(JSON.stringify(skill, null, 2))}</pre>
   </div>`;
@@ -272,8 +282,6 @@ function downloadMarkdown(skill) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-let sampleSyncSeq = 0;
-
 async function syncSampleData(skill) {
   if (!skill || !skill.id) return;
   const seq = ++sampleSyncSeq;
@@ -326,7 +334,7 @@ function renderHistory() {
     const item = document.createElement("button");
     item.className = "history-item" + (conv.id === currentConversationId ? " active" : "");
     item.dataset.convId = conv.id;
-    const runDot = conv.running ? '<span class="run-dot" title="运行中"></span>' : "";
+    const runDot = conv.activeTask ? '<span class="run-dot" title="运行中"></span>' : "";
     item.innerHTML = `
       <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
         <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/>
@@ -349,7 +357,7 @@ function renderConversation(convId) {
   for (const m of conv.messages || []) {
     appendMsgEl(m.role, m.html);
   }
-  if (conv.running) {
+  if (conv.activeTask) {
     renderRunningUI(convId);
   }
   $("#chatTitle").textContent = conv.title || "新对话";
@@ -358,120 +366,176 @@ function renderConversation(convId) {
 
 function renderRunningUI(convId) {
   const conv = conversations[convId];
-  if (!conv || !conv.running) return;
-  const r = conv.running;
-  if (r.type === "generate") {
-    const box = appendMsgEl(
-      "assistant",
-      `<div class="assistant-body">
-        <div class="assistant-label"><span class="avatar">S</span> ${esc(r.label)}</div>
-        <div class="stream-box"><pre class="stream-json"></pre><span class="cursor"></span></div>
-      </div>`
-    );
-    const pre = box.querySelector(".stream-json");
-    pre.textContent = r.text;
-    uiRefs[convId] = { box, pre };
-  } else {
-    const box = appendMsgEl(
-      "assistant",
-      `<div class="assistant-body">
-        <div class="assistant-label"><span class="avatar">S</span> 正在按分析流程处理数据…</div>
-        <div class="metrics"></div>
-        <div class="md stream-md"><span class="cursor"></span></div>
-      </div>`
-    );
-    const metricsEl = box.querySelector(".metrics");
-    const mdEl = box.querySelector(".stream-md");
-    if (r.metrics) {
-      metricsEl.innerHTML = Object.entries(r.metrics)
-        .map(([k, v]) => `<span class="metric"><strong>${esc(k)}</strong>${esc(v)}</span>`)
-        .join("");
-    }
-    mdEl.innerHTML = renderMarkdown(r.text) + '<span class="cursor"></span>';
-    uiRefs[convId] = { box, metricsEl, mdEl };
-  }
+  const task = conv && conv.activeTask;
+  if (!task) return;
+  const label = task.kind === "generate" ? "正在生成 Skill 配置…" : "正在按分析流程处理数据…";
+  const note = task.disconnected
+    ? `<div class="disconnect-note"><span>连接中断，任务仍在后台运行</span><button class="btn" data-attach>重新连接</button></div>`
+    : "";
+  const box = appendMsgEl(
+    "assistant",
+    `<div class="assistant-body">
+      <div class="assistant-label"><span class="avatar">S</span> ${label}</div>
+      <div class="stream-box"><pre class="stream-json"></pre><span class="cursor"></span></div>
+      ${note}
+    </div>`
+  );
+  const pre = box.querySelector(".stream-json");
+  pre.textContent = task.progress || "";
+  uiRefs[convId] = { box, pre };
   scrollToBottom();
 }
 
-function updateRunningUI(convId) {
+function updateTaskProgressUI(convId) {
   if (convId !== currentConversationId) return;
   const refs = uiRefs[convId];
   const conv = conversations[convId];
-  if (!refs || !refs.box || !refs.box.isConnected || !conv || !conv.running) return;
-  const r = conv.running;
-  if (r.type === "generate") {
-    refs.pre.textContent = r.text;
-  } else {
-    if (r.metrics) {
-      refs.metricsEl.innerHTML = Object.entries(r.metrics)
-        .map(([k, v]) => `<span class="metric"><strong>${esc(k)}</strong>${esc(v)}</span>`)
-        .join("");
-    }
-    refs.mdEl.innerHTML = renderMarkdown(r.text) + '<span class="cursor"></span>';
-  }
+  const task = conv && conv.activeTask;
+  if (!refs || !refs.box || !refs.box.isConnected || !task) return;
+  refs.pre.textContent = task.progress || "";
   scrollToBottom();
 }
 
-/* ---------- 生成 / 执行（绑定到会话，切换不中断） ---------- */
+/* ---------- 后台任务（断线可续跑） ---------- */
 
-async function generateSkill(requirement, convId) {
+async function createAndRunTask(convId, kind, params) {
   const conv = conversations[convId];
-  if (!conv || conv.running) return;
-  conv.running = { type: "generate", text: "", label: "正在生成 Skill 配置…" };
+  if (!conv) return;
+  setStatus("正在创建任务…", "loading");
+  const task = await api("/api/tasks", {
+    method: "POST",
+    body: JSON.stringify({ kind, ...params }),
+  });
+  conv.activeTask = {
+    id: task.id,
+    kind,
+    params,
+    progress: task.progress || "",
+    disconnected: false,
+  };
   saveConvos();
   renderHistory();
   if (convId === currentConversationId) {
-    setStatus(deepThink ? "深度思考中…" : "正在生成 Skill…", "loading");
+    setStatus(kind === "generate" ? "正在生成 Skill…" : "正在执行 Skill…", "loading");
     renderConversation(convId);
   }
-  try {
-    await streamApi("/api/skills/generate/stream", { requirement }, (ev) => {
-      const c = conversations[convId];
-      if (!c || !c.running) return;
-      if (ev.type === "delta") {
-        c.running.text += ev.content;
-        updateRunningUI(convId);
-        scheduleSave();
-      } else if (ev.type === "result") {
-        c.running = null;
-        c.skill = ev.skill;
-        c.title = ev.skill.name;
-        const cachedLabel = ev.cached ? "Skill 已生成（缓存命中）" : "Skill 已生成";
-        c.messages.push({
-          role: "assistant",
-          html:
-            `<div class="assistant-body"><div class="assistant-label"><span class="avatar">S</span> ${cachedLabel}</div>` +
-            skillCardHtml(ev.skill) +
-            `</div>`,
-        });
-        saveConvos();
-        renderHistory();
-        if (convId === currentConversationId) {
-          currentSkill = ev.skill;
-          $("#chatTitle").textContent = ev.skill.name;
-          renderConversation(convId);
-          syncSampleData(ev.skill);
-          setStatus("生成成功", "ok");
-        }
-      } else if (ev.type === "error") {
-        throw new Error(ev.message);
-      }
-    });
-  } catch (err) {
-    const c = conversations[convId];
-    if (!c) return;
-    c.running = null;
-    c.messages.push({
-      role: "assistant",
-      html: `<div class="error-box">${esc(err.message)}</div>`,
-    });
-    saveConvos();
-    renderHistory();
-    if (convId === currentConversationId) {
+  attachTask(convId);
+}
+
+async function attachTask(convId) {
+  const conv = conversations[convId];
+  const task = conv && conv.activeTask;
+  if (!task) return;
+  if (convId === currentConversationId) {
+    setStatus("任务运行中…", "loading");
+    if (!uiRefs[convId] || !uiRefs[convId].box || !uiRefs[convId].box.isConnected) {
       renderConversation(convId);
-      setStatus("生成失败", "error");
     }
   }
+  try {
+    await streamApi(`/api/tasks/${task.id}/stream`, (ev) => {
+      const c = conversations[convId];
+      if (!c || !c.activeTask || c.activeTask.id !== task.id) return;
+      if (ev.type === "delta") {
+        c.activeTask.progress = (c.activeTask.progress || "") + ev.content;
+        c.activeTask.disconnected = false;
+        if (convId === currentConversationId) updateTaskProgressUI(convId);
+        scheduleSave();
+      } else if (ev.type === "result") {
+        finishTask(convId, task.id, ev);
+      } else if (ev.type === "error") {
+        failTask(convId, task.id, ev.message);
+      }
+    }, "GET");
+  } catch (err) {
+    const c = conversations[convId];
+    if (!c || !c.activeTask || c.activeTask.id !== task.id) return;
+    c.activeTask.disconnected = true;
+    saveConvos();
+    if (convId === currentConversationId) {
+      renderConversation(convId);
+      setStatus("连接中断，任务仍在后台运行", "loading");
+    }
+  }
+}
+
+function finishTask(convId, taskId, ev) {
+  const c = conversations[convId];
+  if (!c || !c.activeTask || c.activeTask.id !== taskId) return;
+  if (ev.kind === "generate") {
+    const skill = ev.skill;
+    c.skill = skill;
+    c.title = skill.name;
+    const cachedLabel = ev.cached ? "Skill 已生成（缓存命中）" : "Skill 已生成";
+    c.messages.push({
+      role: "assistant",
+      html:
+        `<div class="assistant-body"><div class="assistant-label"><span class="avatar">S</span> ${cachedLabel}</div>` +
+        skillCardHtml(skill) +
+        `</div>`,
+    });
+    if (convId === currentConversationId) {
+      currentSkill = skill;
+      $("#chatTitle").textContent = skill.name;
+      syncSampleData(skill);
+    }
+  } else {
+    const metricsHtml = Object.entries(ev.metrics || {})
+      .map(([k, v]) => `<span class="metric"><strong>${esc(k)}</strong>${esc(v)}</span>`)
+      .join("");
+    const qualityWarn =
+      ev.quality && ev.quality.warnings && ev.quality.warnings.length
+        ? `<div class="quality-note">数据质量提示：${esc(ev.quality.warnings.join("；"))}</div>`
+        : "";
+    const consistencyWarn =
+      ev.consistency && ev.consistency.passed === false && ev.consistency.missing.length
+        ? `<div class="consistency-warn">一致性提示：已计算指标（${esc(ev.consistency.missing.join("，"))}）未在报告中出现，请人工核对。</div>`
+        : "";
+    const modelLine = ev.model ? `<div class="meta-line">分析模型：${esc(ev.model)}</div>` : "";
+    c.messages.push({
+      role: "assistant",
+      html:
+        `<div class="assistant-body"><div class="assistant-label"><span class="avatar">S</span> 分析完成</div>` +
+        `${qualityWarn}` +
+        `<div class="metrics">${metricsHtml}</div>` +
+        `<div class="md">${renderMarkdown(ev.markdown || "")}</div>` +
+        `${consistencyWarn}` +
+        `${modelLine}` +
+        `<p class="review-note">本报告由 AI 生成，关键指标请结合原始数据复核。</p></div>`,
+    });
+  }
+  c.activeTask = null;
+  saveConvos();
+  renderHistory();
+  if (convId === currentConversationId) {
+    renderConversation(convId);
+    setStatus(ev.kind === "generate" ? "生成成功" : "执行完成", "ok");
+  }
+}
+
+function failTask(convId, taskId, message) {
+  const c = conversations[convId];
+  if (!c || !c.activeTask || c.activeTask.id !== taskId) return;
+  c.pendingRetry = { kind: c.activeTask.kind, params: c.activeTask.params };
+  c.messages.push({
+    role: "assistant",
+    html: `<div class="error-box">${esc(message)}<div class="error-actions"><button class="btn primary" data-task-retry>重试</button></div></div>`,
+  });
+  c.activeTask = null;
+  saveConvos();
+  renderHistory();
+  if (convId === currentConversationId) {
+    renderConversation(convId);
+    setStatus("任务失败", "error");
+  }
+}
+
+/* ---------- 生成 / 执行入口 ---------- */
+
+async function generateSkill(requirement, convId) {
+  const conv = conversations[convId];
+  if (!conv || conv.activeTask) return;
+  await createAndRunTask(convId, "generate", { requirement });
 }
 
 async function executeSkill() {
@@ -479,7 +543,7 @@ async function executeSkill() {
   const conv = conversations[convId];
   const skill = currentSkill || (conv && conv.skill);
   if (!conv || !skill) return;
-  if (conv.running) {
+  if (conv.activeTask) {
     setStatus("当前会话正在运行，请稍候", "error");
     return;
   }
@@ -490,82 +554,37 @@ async function executeSkill() {
     setStatus("示例数据不是合法 JSON", "error");
     return;
   }
-  conv.messages.push({
-    role: "user",
-    html: `<div class="bubble">使用示例数据执行「${esc(skill.name)}」</div>`,
-  });
-  conv.running = { type: "execute", text: "", metrics: null };
+  const userHtml = `<div class="bubble">使用示例数据执行「${esc(skill.name)}」</div>`;
+  conv.messages.push({ role: "user", html: userHtml });
   saveConvos();
   renderHistory();
-  if (convId === currentConversationId) {
-    setStatus("正在执行 Skill…", "loading");
-    renderConversation(convId);
-  }
+  showChat();
+  appendMsgEl("user", userHtml);
+  scrollToBottom();
+  await createAndRunTask(convId, "execute", { skill_id: skill.id, input_data: inputData });
+}
+
+async function publishSkill() {
+  if (!currentSkill) return;
+  setStatus("正在发布…", "loading");
   try {
-    await streamApi(`/api/skills/${skill.id}/execute/stream`, { input_data: inputData }, (ev) => {
-      const c = conversations[convId];
-      if (!c || !c.running) return;
-      if (ev.type === "metrics") {
-        c.running.metrics = ev.metrics;
-        updateRunningUI(convId);
-      } else if (ev.type === "delta") {
-        c.running.text += ev.content;
-        updateRunningUI(convId);
-        scheduleSave();
-      } else if (ev.type === "done") {
-        const running = c.running;
-        const mdText = running.text;
-        const metricsHtml = Object.entries(running.metrics || {})
-          .map(([k, v]) => `<span class="metric"><strong>${esc(k)}</strong>${esc(v)}</span>`)
-          .join("");
-        c.running = null;
-        c.messages.push({
-          role: "assistant",
-          html:
-            `<div class="assistant-body"><div class="assistant-label"><span class="avatar">S</span> 分析完成</div>` +
-            `<div class="metrics">${metricsHtml}</div>` +
-            `<div class="md">${renderMarkdown(mdText)}</div></div>`,
-        });
-        saveConvos();
-        renderHistory();
-        if (convId === currentConversationId) {
-          renderConversation(convId);
-          setStatus("执行完成", "ok");
-        }
-      } else if (ev.type === "error") {
-        throw new Error(ev.message);
-      }
+    const updated = await api(`/api/skills/${currentSkill.id}/publish`, {
+      method: "POST",
     });
-  } catch (err) {
-    const c = conversations[convId];
-    if (!c) return;
-    c.running = null;
-    c.messages.push({
-      role: "assistant",
-      html: `<div class="error-box">${esc(err.message)}</div>`,
-    });
-    saveConvos();
-    renderHistory();
-    if (convId === currentConversationId) {
-      renderConversation(convId);
-      setStatus("执行失败", "error");
+    const conv = conversations[currentConversationId];
+    if (conv) {
+      conv.skill = updated;
+      currentSkill = updated;
+      saveConvos();
+      renderConversation(currentConversationId);
+      setStatus("已发布", "ok");
     }
+  } catch (err) {
+    setStatus(err.message, "error");
   }
 }
 
-/* ---------- 会话切换 / 导入 / 发送 ---------- */
-
-function loadConversation(id) {
-  const conv = conversations[id];
-  if (!conv) return;
-  renderConversation(id);
-  syncSampleData(conv.skill);
-  setStatus(conv.running ? "正在运行中…" : "已加载", conv.running ? "loading" : "ok");
-  renderHistory();
-  if (window.innerWidth <= 860) {
-    $("#sidebar").classList.remove("open");
-  }
-}
+/* ---------- 澄清 / 会话切换 / 导入 / 发送 ---------- */
 
 async function startGeneration(requirement, convId) {
   setStatus("正在判断是否需要补充信息…", "loading");
@@ -600,12 +619,25 @@ async function startGeneration(requirement, convId) {
   }
 }
 
+function loadConversation(id) {
+  const conv = conversations[id];
+  if (!conv) return;
+  renderConversation(id);
+  setStatus(conv.activeTask ? "任务运行中…" : "已加载", conv.activeTask ? "loading" : "ok");
+  renderHistory();
+  syncSampleData(conv.skill);
+  if (conv.activeTask) attachTask(id);
+  if (window.innerWidth <= 860) {
+    $("#sidebar").classList.remove("open");
+  }
+}
+
 function send() {
   const requirement = input.value.trim();
   if (!requirement) return;
   const conv = conversations[currentConversationId];
   if (!conv) return;
-  if (conv.running) {
+  if (conv.activeTask) {
     setStatus("当前会话正在运行，请稍候", "error");
     return;
   }
@@ -631,6 +663,7 @@ function newChat() {
     skill: null,
     messages: [],
     createdAt: Date.now(),
+    activeTask: null,
   };
   delete uiRefs[currentConversationId];
   saveConvos();
@@ -764,6 +797,7 @@ chatThread.addEventListener("click", (e) => {
     conv.pendingRequirement = null;
     saveConvos();
     renderHistory();
+    showChat();
     appendMsgEl("user", userHtml);
     scrollToBottom();
     const contextParts = [];
@@ -775,6 +809,28 @@ chatThread.addEventListener("click", (e) => {
     generateSkill(context, currentConversationId);
     return;
   }
+
+  if (e.target.closest("[data-attach]")) {
+    const conv = conversations[currentConversationId];
+    if (conv && conv.activeTask) {
+      conv.activeTask.disconnected = false;
+      saveConvos();
+      renderConversation(currentConversationId);
+      attachTask(currentConversationId);
+    }
+    return;
+  }
+
+  if (e.target.closest("[data-task-retry]")) {
+    const conv = conversations[currentConversationId];
+    const retry = conv && conv.pendingRetry;
+    if (!retry) return;
+    conv.pendingRetry = null;
+    saveConvos();
+    createAndRunTask(currentConversationId, retry.kind, retry.params);
+    return;
+  }
+
   const jsonToggle = e.target.closest("[data-json-toggle]");
   if (jsonToggle) {
     const card = jsonToggle.closest(".skill-card");
@@ -785,6 +841,10 @@ chatThread.addEventListener("click", (e) => {
   }
   if (e.target.closest("[data-export]")) {
     if (currentSkill) downloadMarkdown(currentSkill);
+    return;
+  }
+  if (e.target.closest("[data-publish]")) {
+    publishSkill();
     return;
   }
   if (e.target.closest("[data-execute]")) {
@@ -826,6 +886,10 @@ async function init() {
   } catch (err) {
     setStatus(err.message, "error");
   }
+  // 恢复未完成的后台任务（断线/刷新后继续）
+  Object.values(conversations).forEach((conv) => {
+    if (conv.activeTask) attachTask(conv.id);
+  });
 }
 
 init();

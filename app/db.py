@@ -37,5 +37,18 @@ def init_db():
             );
             CREATE INDEX IF NOT EXISTS idx_skill_versions_skill
                 ON skill_versions(skill_id);
+            CREATE TABLE IF NOT EXISTS tasks (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                requirement TEXT,
+                skill_id TEXT,
+                input_data TEXT,
+                status TEXT DEFAULT 'pending',
+                progress TEXT DEFAULT '',
+                result TEXT,
+                error TEXT,
+                created_at TEXT,
+                updated_at TEXT
+            );
             """
         )

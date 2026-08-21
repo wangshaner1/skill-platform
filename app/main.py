@@ -14,6 +14,7 @@ from .audit import log_action
 from .cache import cache_skill, get_cached_skill
 from .clarifier import clarify_requirement
 from .config import settings
+from .data_quality import check_data_quality
 from .llm_client import chat_completion_stream
 from .sample_data import SAMPLE_INPUT, SAMPLE_REQUIREMENT
 from .schemas import SkillConfig
@@ -22,6 +23,13 @@ from .skill_generator import SYSTEM_PROMPT, _extract_json, generate_skill
 from .skill_validation import validate_skill
 from .store import SkillStore
 from .stats import incr, snapshot
+from .tasks import (
+    create_task,
+    get_progress_state,
+    get_task,
+    recover_stale_tasks,
+    start_task,
+)
 
 
 logging.basicConfig(
@@ -34,6 +42,7 @@ logger = logging.getLogger("skill-platform")
 app = FastAPI(title="企业岗位经验 Skill 生成平台 Demo")
 store = SkillStore()
 SAMPLE_CACHE_FILE = settings.data_dir / "sample_data_cache.json"
+recover_stale_tasks()
 
 
 @app.middleware("http")
@@ -66,6 +75,13 @@ class SampleGenerateRequest(BaseModel):
     skill_id: str = Field(..., min_length=1, max_length=64)
 
 
+class TaskRequest(BaseModel):
+    kind: str = Field(..., pattern="^(generate|execute)$")
+    requirement: str = Field(default="", max_length=500)
+    skill_id: str = Field(default="", max_length=64)
+    input_data: dict = None
+
+
 def sse(event: dict) -> str:
     return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
@@ -83,6 +99,75 @@ def api_stats():
     total = hits + misses
     stats["cache_hit_rate"] = round(hits / total * 100, 2) if total else 0
     return stats
+
+
+@app.post("/api/tasks")
+def api_create_task(req: TaskRequest):
+    if req.kind == "generate" and not req.requirement.strip():
+        raise HTTPException(status_code=400, detail="生成任务缺少需求")
+    if req.kind == "execute" and not req.skill_id:
+        raise HTTPException(status_code=400, detail="执行任务缺少 Skill ID")
+    task = create_task(
+        req.kind,
+        requirement=req.requirement,
+        skill_id=req.skill_id,
+        input_data=req.input_data,
+    )
+    start_task(task["id"])
+    return get_task(task["id"])
+
+
+@app.get("/api/tasks/{task_id}")
+def api_get_task(task_id: str):
+    task = get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return task
+
+
+@app.get("/api/tasks/{task_id}/stream")
+def api_task_stream(task_id: str):
+    task = get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    def gen():
+        offset = 0
+        last_ping = time.time()
+        try:
+            while True:
+                current = get_task(task_id)
+                state = (
+                    get_progress_state(task_id)
+                    if current and current["status"] == "running"
+                    else None
+                )
+                progress = (
+                    state["progress"]
+                    if state is not None
+                    else (current.get("progress") or "")
+                )
+                if len(progress) > offset:
+                    yield sse({"type": "delta", "content": progress[offset:]})
+                    offset = len(progress)
+
+                status = current["status"] if current else "failed"
+                if status == "done":
+                    payload = current["result"] or {}
+                    yield sse({"type": "result", "kind": current["kind"], **payload})
+                    return
+                if status == "failed":
+                    yield sse({"type": "error", "message": current.get("error") or "任务失败"})
+                    return
+
+                if time.time() - last_ping >= 15:
+                    yield ": ping\n\n"
+                    last_ping = time.time()
+                time.sleep(0.5)
+        except GeneratorExit:
+            return
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
 
 
 @app.post("/api/skills/generate")
@@ -202,6 +287,19 @@ def api_versions(skill_id: str):
     return store.get_versions(skill_id)
 
 
+@app.post("/api/skills/{skill_id}/publish")
+def api_publish(skill_id: str):
+    skill = store.get(skill_id)
+    if not skill:
+        raise HTTPException(status_code=404, detail="Skill 不存在")
+    store.set_status(skill_id, "published")
+    updated = store.get(skill_id)
+    if updated.get("requirement"):
+        cache_skill(updated["requirement"], updated)
+    log_action("publish", requirement=updated.get("requirement", ""), skill_id=skill_id)
+    return updated
+
+
 @app.post("/api/skills/{skill_id}/execute")
 def api_execute(skill_id: str, req: ExecuteRequest):
     incr("execute_calls")
@@ -211,6 +309,9 @@ def api_execute(skill_id: str, req: ExecuteRequest):
     missing = validate_input_data(skill, req.input_data)
     if missing:
         raise HTTPException(status_code=400, detail="输入数据缺少必填字段：" + "、".join(missing))
+    quality = check_data_quality(skill, req.input_data)
+    if quality["errors"]:
+        raise HTTPException(status_code=400, detail="输入数据质量不合格：" + "；".join(quality["errors"]))
     try:
         return execute_skill(skill, req.input_data)
     except Exception as exc:
@@ -226,10 +327,14 @@ def api_execute_stream(skill_id: str, req: ExecuteRequest):
     missing = validate_input_data(skill, req.input_data)
     if missing:
         raise HTTPException(status_code=400, detail="输入数据缺少必填字段：" + "、".join(missing))
+    quality = check_data_quality(skill, req.input_data)
+    if quality["errors"]:
+        raise HTTPException(status_code=400, detail="输入数据质量不合格：" + "；".join(quality["errors"]))
 
     def gen():
         try:
             messages, metrics, _ = build_execution_context(skill, req.input_data)
+            yield sse({"type": "quality", "warnings": quality["warnings"]})
             yield sse({"type": "metrics", "metrics": metrics})
             for chunk in chat_completion_stream(messages, temperature=0.3, max_tokens=3500):
                 yield sse({"type": "delta", "content": chunk})
@@ -265,7 +370,8 @@ def api_sample_generate(req: SampleGenerateRequest):
     if not skill:
         raise HTTPException(status_code=404, detail="Skill 不存在")
 
-    cache_key = skill.get("requirement") or skill["id"]
+    # 按 Skill ID 键控示例数据缓存：不同版本的输入定义不同，不能按需求复用
+    cache_key = skill["id"]
     cache = {}
     if SAMPLE_CACHE_FILE.exists():
         try:

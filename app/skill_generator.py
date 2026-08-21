@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime
 
 from .cache import cache_skill, get_cached_skill
+from .config import settings
 from .llm_client import chat_completion
 from .schemas import SkillConfig
 from .skill_validation import validate_skill
@@ -111,6 +112,7 @@ def generate_skill(requirement: str, store=None, retries: int = 2):
             skill.version = "v1"
             skill.created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             skill.requirement = requirement
+            skill.model = settings.qwen_model
             result = skill.model_dump()
             validation = validate_skill(requirement, result)
             if not validation["passed"]:

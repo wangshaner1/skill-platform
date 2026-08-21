@@ -101,3 +101,11 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 - 审计日志：生成/导入等关键操作写入 `data/audit.log`，需求只记录哈希不落原文。
 - 可观测性：`/api/stats` 返回 LLM 调用次数、缓存命中/未命中、各接口调用数；中间件记录请求耗时日志。
 - 生产建议：API Key 使用 KMS/密钥服务托管，部署使用 `Dockerfile` + `docker-compose.yml`（web + redis）。
+
+## 10. 任务与断线续跑
+
+- 生成与执行通过 `POST /api/tasks` 创建后台任务，任务在独立线程中运行，进度与结果写入 SQLite（`tasks` 表）。
+- `GET /api/tasks/{id}` 查询任务状态；`GET /api/tasks/{id}/stream` 以 SSE 订阅进度，断线后可重新订阅（服务端记录已发送偏移）。
+- 前端把 `task_id` 存在会话中；页面刷新或断网后重新订阅，任务不中断；任务失败保留原因并提供“重试”按钮。
+- 服务重启时，残留的 `running` 任务会被标记为失败，前端提示重试。
+- 存储层启动时会从历史 JSON 按需求补齐缺失的 Skill 记录，防止数据意外丢失。

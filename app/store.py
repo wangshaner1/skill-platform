@@ -30,20 +30,26 @@ class SkillStore:
         self._migrate_json()
 
     def _migrate_json(self):
-        """首次运行时把历史 JSON 数据导入 SQLite。"""
+        """把历史 JSON 中缺失的 Skill 补齐到 SQLite（按需求去重，避免重复导入）。"""
         json_file = settings.data_dir / "skills.json"
         if not json_file.exists():
             return
-        with get_conn() as conn:
-            count = conn.execute("SELECT COUNT(*) AS c FROM skills").fetchone()["c"]
-            if count:
-                return
         try:
             items = json.loads(json_file.read_text(encoding="utf-8"))
         except Exception:
             return
+        with get_conn() as conn:
+            existing_reqs = {
+                row["requirement"]
+                for row in conn.execute(
+                    "SELECT requirement FROM skills WHERE requirement IS NOT NULL"
+                ).fetchall()
+            }
         for item in items:
-            self.save(item)
+            requirement = item.get("requirement")
+            if requirement and requirement not in existing_reqs:
+                self.save(item)
+                existing_reqs.add(requirement)
 
     def list(self):
         with get_conn() as conn:
@@ -79,7 +85,7 @@ class SkillStore:
             skill["version"] = version
             skill["created_at"] = skill.get("created_at") or now
             skill["updated_at"] = now
-            skill["status"] = skill.get("status", "published")
+            skill["status"] = skill.get("status", "draft")
             conn.execute(
                 """
                 INSERT INTO skills (id, name, data, requirement, version, status, created_at, updated_at)
@@ -104,6 +110,19 @@ class SkillStore:
                 ),
             )
         return skill
+
+    def set_status(self, skill_id, status):
+        with get_conn() as conn:
+            row = conn.execute("SELECT data FROM skills WHERE id = ?", (skill_id,)).fetchone()
+            if not row:
+                return False
+            data = json.loads(row["data"])
+            data["status"] = status
+            conn.execute(
+                "UPDATE skills SET status = ?, data = ?, updated_at = ? WHERE id = ?",
+                (status, json.dumps(data, ensure_ascii=False), _now(), skill_id),
+            )
+        return True
 
     def get_versions(self, skill_id):
         versions = []

@@ -28,6 +28,6 @@ class SkillConfig(BaseModel):
     agent_prompt: str = Field(..., description="Agent Prompt")
     output_template: str = Field(..., description="输出结果模板")
     version: str = Field(default="v1", description="版本")
+    model: str = Field(default="", description="生成该 Skill 时使用的模型")
     created_at: str = Field(default="", description="创建时间")
     requirement: str = Field(default="", description="原始需求")
-
