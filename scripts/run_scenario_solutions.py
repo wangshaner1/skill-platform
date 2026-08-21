@@ -1,6 +1,6 @@
 """批量生成并执行四个场景的 Skill，输出 Markdown 报告。
 
-用法：python scripts/run_scenario_demo.py [0|1|2|3]
+用法：python scripts/run_scenario_solutions.py [0|1|2|3]
  0=电商运营分析  1=销售经营分析  2=用户增长分析  3=零售门店分析
 不带参数时依次运行全部四个场景。
 """
@@ -53,7 +53,7 @@ SCENARIOS = [
 
 def build_report(scenario, skill, result):
     parts = []
-    parts.append(f"# {scenario['name']}：Skill 生成与执行演示")
+    parts.append(f"# {scenario['name']}：Skill 生成与执行方案")
     parts.append("")
     parts.append(f"- 生成需求：{scenario['requirement']}")
     parts.append(f"- Skill ID：`{skill['id']}`")

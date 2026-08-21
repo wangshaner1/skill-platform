@@ -1,10 +1,39 @@
-# 企业岗位经验 Skill 生成平台 Demo
+# DataAgent Skill 平台
 
-本 Demo 实现面试题要求的最小可运行闭环：
+> 把优秀员工的岗位经验，沉淀为企业可自建、可复用、可治理的 AI 员工能力。
 
-自然语言输入 → Skill 自动生成 → Skill 配置展示 → 调用 Skill 执行任务 → 输出分析结果
+DataAgent Skill 平台是数花智算推出的企业 AI 员工技能平台。业务人员用自然语言描述岗位经验，系统自动生成结构化、可执行的 Skill（AI 员工技能），并可直接调用执行——让每个门店、每个团队都拥有“金牌店长 / 销售冠军”级别的经营分析能力，全程无需写代码。
 
-默认演示场景：**抖音直播运营复盘**，LLM 使用阿里云百炼 `qwen3.7-plus` 的 OpenAI 兼容接口。
+## 解决的业务问题
+
+- 经验难复制：资深店长、分析师的方法论随人走，离职即流失，新员工上手周期 2-3 个月
+- 报告耗时：区域经理每周手工汇总各门店经营数据 6-8 小时，口径不统一、对比失真
+- 通用模型不可用：ChatGPT 类产品不懂企业数据口径，无法直接产出可用的经营报告
+- 不敢用 AI：输出不可验证、不可治理，企业无法把 AI 结论用于经营决策
+
+## 典型业务场景
+
+- 门店经营分析：店长一句话创建「门店经营分析 AI 员工」，自动输出坪效、人效、连带率与改进建议
+- 直播运营复盘：每场直播结束自动生成复盘报告（流量、转化、货品、粉丝沉淀）
+- 电商店铺诊断：流量、转化、客单、商品结构、渠道 ROI 一键复盘
+- 销售团队复盘：目标达成、区域差异、客户分层与回款分析
+- 用户增长分析：渠道效率、留存、激活漏斗与付费转化
+
+## 核心能力
+
+- 自然语言创建 AI 员工：需求澄清 → Skill 生成 → 语义校验 → 草稿 / 发布审核
+- 指标口径库：27+ 业务指标由规则引擎统一计算，杜绝口径漂移
+- 流式输出 + 断线续跑：长任务后台运行，刷新或断网后可恢复进度
+- 缓存降本：相同需求 Redis 命中秒回，显著降低模型调用成本
+- 数据安全：输入数据加密存储、敏感信息送模型前脱敏、审计日志、报告复核提示
+- 质量保障：数据质量门禁、结论-指标一致性检查、Skill 版本管理
+
+## 使用流程
+
+1. 输入需求，如“帮我创建一个门店经营分析 AI 员工”；信息不足时系统先追问澄清。
+2. 系统生成 Skill 配置（名称、描述、场景、输入定义、分析流程、Agent Prompt、输出模板），并自动匹配示例数据。
+3. 确认后发布 Skill（草稿 → 已发布），或直接使用示例数据执行。
+4. 查看分析报告：指标概览、复盘结论、优化建议，附模型与复核提示。
 
 ## 快速开始
 
@@ -14,86 +43,54 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 copy .env.example .env
-# 编辑 .env，填入 QWEN_API_KEY
-python -m uvicorn app.main:app --reload --port 8000
+# 编辑 .env，填入 QWEN_API_KEY、REDIS_URL
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-打开浏览器访问 `http://127.0.0.1:8000`。
+浏览器访问 `http://127.0.0.1:8000`。
 
-## 使用步骤
+容器化部署：
 
-界面为对话式布局（参考 DeepSeek 网页版），操作流程：
+```bash
+export QWEN_API_KEY=your_key
+docker compose up --build
+```
 
-1. 在底部输入框输入需求（如“帮我创建一个抖音直播运营复盘 Skill”），按回车或点击发送。
-2. 助手返回自动生成的 Skill 配置卡片（名称、描述、场景、输入定义、分析流程、Agent Prompt、输出模板），可展开完整 JSON。
-3. 点击卡片上的“使用示例数据执行”。
-4. 助手返回指标概览与完整复盘报告。
-5. 点击卡片上的“导出 Markdown”，可下载包含完整配置（含整份 JSON）的 Markdown 文档。
-6. 导出的 `.md` 文件可直接复用：点左侧“导入 Skill”选择该文件，即可恢复为可执行、可再次导出的 Skill。
+## 技术栈
 
-左侧栏支持历史对话回看与深色/浅色模式切换；“示例数据”按钮可查看或编辑执行时使用的输入数据；顶部“深度思考”开关会切换生成中的提示文案。
-
-示例数据与 Skill 自动匹配：每个 Skill 首次打开时，系统按它的输入定义自动生成一份匹配的示例数据（按 Skill ID 缓存，不同版本各自独立）；执行前做必填字段、类型与异常值质量门禁，不合格直接拦截。
-
-信任增强：执行结果会给出“分析模型”、数据质量提示、结论-指标一致性提示，并附“AI 生成，请复核”提醒。
-
-每个对话独立保存为一条会话线程（存储在浏览器本地），互不混流：点击历史条目会单独打开对应对话，可删除不需要的会话；点“开启新对话”即开始一条全新的隔离会话。
-
-任务运行绑定在会话上：生成或执行过程中切换到其他会话，原任务会在后台继续运行，回到原会话可看到实时进度和最终结果；运行中的会话在历史列表中会显示运行圆点。
-
-## Redis 缓存
-
-- 生成的 Skill 以“规范化需求”的 SHA-256 作为键写入 Redis（默认 TTL 30 天）。
-- 相同需求再次请求时直接返回缓存，不再调用 LLM，节省成本；前端会显示“缓存命中”。
-- Redis 不可用时自动降级为不缓存，不影响正常生成。
-- 默认连接 `redis://127.0.0.1:6379/0`，可用环境变量 `REDIS_URL` 覆盖。
-- Windows 本地可用仓库内的 `tools/redis/redis-server.exe --port 6379` 启动 Redis。
+- 后端：Python 3.9、FastAPI、Pydantic
+- 存储：SQLite（生产可迁移 PostgreSQL）+ Redis
+- 前端：原生 HTML / CSS / JavaScript
+- 模型：阿里云百炼 qwen3.7-plus（OpenAI 兼容接口，可通过环境变量替换）
 
 ## 目录结构
 
 ```text
 skill-platform-demo/
-├─ app/
-│  ├─ main.py              # FastAPI 入口与 API 路由
-│  ├─ config.py            # 配置与 .env 加载
-│  ├─ schemas.py           # Skill 配置 Schema
-│  ├─ llm_client.py        # 阿里云百炼 OpenAI 兼容接口封装
-│  ├─ skill_generator.py   # 自然语言 -> Skill 生成引擎
+├─ app/                    # 后端应用
+│  ├─ main.py              # 接口入口
+│  ├─ skill_generator.py   # Skill 生成引擎
 │  ├─ skill_executor.py    # Skill 执行引擎
-│  ├─ store.py / db.py     # Skill 资产存储（SQLite + 版本历史）
-│  ├─ cache.py             # Redis 缓存
-│  ├─ clarifier.py         # 需求澄清
+│  ├─ tasks.py             # 后台任务（断线续跑）
 │  ├─ metrics_library.py   # 指标口径库
-│  ├─ skill_validation.py  # 生成后语义校验
-│  ├─ stats.py / audit.py  # 统计与审计
-│  └─ sample_data.py       # 示例需求与示例输入数据
-├─ static/
-│  ├─ index.html
-│  ├─ style.css
-│  └─ app.js
-├─ docs/
-│  ├─ PRD.md
-│  ├─ TECH_DESIGN.md
-│  ├─ INTERVIEW_QA.md
-│  ├─ OPTIMIZATION.md
-│  └─ RISKS.md
-├─ data/                   # 运行后生成的 Skill 资产
-├─ requirements.txt
-└─ .env.example
+│  ├─ data_quality.py      # 数据质量门禁
+│  ├─ consistency.py       # 结论一致性检查
+│  ├─ crypto.py            # 输入加密
+│  ├─ masking.py           # 敏感信息脱敏
+│  ├─ cache.py             # Redis 缓存
+│  └─ ... 
+├─ static/                 # 前端
+├─ docs/                   # 产品与技术文档
+├─ scripts/                # 行业场景批量脚本
+├─ output/                 # 行业解决方案报告与示例数据
+├─ Dockerfile / docker-compose.yml
+└─ requirements.txt
 ```
 
-## 关键设计
+## 文档导航
 
-- **Skill ≠ Prompt**：Skill 是一份结构化配置，包含名称、描述、场景、输入契约、分析流程、Agent Prompt、输出模板与版本。
-- **生成防错**：LLM 输出必须通过 Pydantic Schema 校验，失败自动重试并携带错误信息。
-- **执行防错**：先由规则引擎计算确定性指标，再交给 LLM 做解读，避免编造数字。
-- **可运行闭环**：后端 FastAPI + 前端原生 HTML/JS，无需额外构建步骤。
-- **流式输出**：生成与执行均使用 SSE 流式接口，AI 回复逐段到达并实时渲染，减少等待感。
-- **Redis 缓存**：相同需求命中缓存直接返回，显著降低 LLM 调用成本。
-- **需求澄清**：信息不足时先追问 1-3 个问题；需求明确时规则预判直接生成，不浪费 LLM 调用。
-- **语义校验**：生成后做规则与主题一致性校验，不合格自动重试或报错，防止跑题 Skill。
-- **SQLite + 版本管理**：Skill 资产入库，重复保存自动升版本并保留历史（`/api/skills/{id}/versions`）。
-- **可观测性**：`/api/stats` 可查看 LLM 调用次数、缓存命中率等指标；所有请求有耗时日志。
-- **安全加固**：输入长度限制、Prompt 注入防护、审计日志（需求只记录哈希不落原文）。
-- **断线续跑**：生成/执行改为后台任务（独立线程 + 落库），刷新页面或断网后任务继续运行，重新连接可恢复进度并拿到完整结果，失败可一键重试。
-- **安全与信任底线**：任务输入数据加密存储（Fernet，密钥不入库）；送模型前自动脱敏手机号/身份证/邮箱/银行卡；新 Skill 默认草稿、发布后才算正式可用；AI 报告附复核提示。
+- 产品需求文档：[docs/PRD.md](docs/PRD.md)
+- 技术方案说明：[docs/TECH_DESIGN.md](docs/TECH_DESIGN.md)
+- 客户常见问题：[docs/FAQ.md](docs/FAQ.md)
+- 产品路线图：[docs/ROADMAP.md](docs/ROADMAP.md)
+- 企业级风险与合规清单：[docs/RISKS.md](docs/RISKS.md)

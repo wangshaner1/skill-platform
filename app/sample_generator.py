@@ -6,7 +6,7 @@ from .llm_client import chat_completion
 
 
 SYSTEM_PROMPT = """你是数据构造专家。
-根据给定 Skill 的输入数据定义，生成一份真实感强、可直接用于分析演示的实例数据。
+根据给定 Skill 的输入数据定义，生成一份真实感强、可直接用于分析的实例数据。
 必须只返回一个 JSON 对象，不要输出 Markdown 代码块、解释或多余文字。
 要求：
 1. 字段名必须严格对应输入数据定义中的 name，类型必须与 type 一致（string/number/list/object）。
@@ -67,4 +67,3 @@ def generate_sample_data(skill: dict):
         if name and name not in data:
             data[name] = _fallback_value(field.get("type", "string"))
     return data
-

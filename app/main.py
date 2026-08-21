@@ -39,7 +39,7 @@ logging.basicConfig(
 logger = logging.getLogger("skill-platform")
 
 
-app = FastAPI(title="企业岗位经验 Skill 生成平台 Demo")
+app = FastAPI(title="DataAgent Skill 平台")
 store = SkillStore()
 SAMPLE_CACHE_FILE = settings.data_dir / "sample_data_cache.json"
 recover_stale_tasks()
